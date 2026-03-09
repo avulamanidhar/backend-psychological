@@ -1,9 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
 
-class MoodEntry(models.fields.Field):
-    pass # Placeholder, the actual model will be below.
-
 class MoodEntry(models.Model):
     id = models.CharField(max_length=100, primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)

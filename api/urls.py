@@ -1,11 +1,12 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import MoodEntryViewSet, UserViewSet
-
-router = DefaultRouter()
-router.register(r'moods', MoodEntryViewSet)
-router.register(r'users', UserViewSet)
+from django.urls import path
+from .views import (
+    UserList, 
+    MoodEntryList, 
+    MoodEntryDetail
+)
 
 urlpatterns = [
-    path('', include(router.urls)),
+    path('users/', UserList.as_view(), name='user-list'),
+    path('moods/', MoodEntryList.as_view(), name='mood-list'),
+    path('moods/<str:pk>/', MoodEntryDetail.as_view(), name='mood-detail'),
 ]
