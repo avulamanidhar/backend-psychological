@@ -10,11 +10,15 @@ from .views import (
     InsightDataView,
     DetectedPatternsView,
     HealthScoreDetail,
-    FeedbackCreate
+    FeedbackCreate,
+    LoginView,
+    ForgotPasswordView
 )
 
 urlpatterns = [
     path('users/', UserList.as_view(), name='user-list'),
+    path('login/', LoginView.as_view(), name='login'),
+    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
     path('profile/<str:username>/', UserProfileDetail.as_view(), name='user-profile'),
     path('moods/', MoodEntryList.as_view(), name='mood-list'),
     path('moods/<str:pk>/', MoodEntryDetail.as_view(), name='mood-detail'),

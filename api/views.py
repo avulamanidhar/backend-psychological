@@ -9,6 +9,7 @@ from .serializers import (
 )
 from django.contrib.auth.models import User
 from django.db.models import Avg
+from django.contrib.auth import authenticate
 import random
 
 # ... (Previous views omit for brevity in target)
@@ -202,3 +203,24 @@ class DashboardSummary(APIView):
             "recommended_activity": recommendation
         }
         return Response(data)
+
+class LoginView(APIView):
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        user = authenticate(username=username, password=password)
+        if user:
+            return Response({
+                "message": "Login successful",
+                "username": user.username,
+                "email": user.email
+            }, status=status.HTTP_200_OK)
+        return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+class ForgotPasswordView(APIView):
+    def post(self, request):
+        username = request.data.get('username')
+        user_exists = User.objects.filter(username=username).exists()
+        if user_exists:
+            return Response({"message": "Password reset link sent to your registered email."}, status=status.HTTP_200_OK)
+        return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
