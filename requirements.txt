@@ -3,3 +3,6 @@ djangorestframework
 django-cors-headers
 mysqlclient
 cryptography
+djangorestframework-simplejwt
+python-dotenv
+drf-spectacular
