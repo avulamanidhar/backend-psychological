@@ -1,0 +1,53 @@
+[
+    {
+        "topic": "Anxiety",
+        "description": "Anxiety is the body's natural response to stress. It's a feeling of fear or apprehension about what's to come.",
+        "symptoms": ["increased heart rate", "rapid breathing", "restlessness", "trouble concentrating", "difficulty falling asleep"],
+        "strategies": ["Deep breathing", "Grounding exercises", "Limiting caffeine", "Prioritizing sleep"]
+    },
+    {
+        "topic": "Stress",
+        "description": "Stress is a feeling of emotional or physical tension. It can come from any event or thought that makes you feel frustrated, angry, or nervous.",
+        "symptoms": ["low energy", "headaches", "upset stomach", "tense muscles", "insomnia"],
+        "strategies": ["Exercise", "Mindfulness", "Time management", "Setting boundaries"]
+    },
+    {
+        "topic": "Depression",
+        "description": "Depression is a mood disorder that causes a persistent feeling of sadness and loss of interest. It affects how you feel, think, and behave.",
+        "symptoms": ["persistent sad mood", "loss of interest in hobbies", "changes in appetite", "feelings of worthlessness", "fatigue"],
+        "strategies": ["Routine maintenance", "Social connection", "Creative expression", "Professional counseling"]
+    },
+    {
+        "topic": "Coping Techniques - 5-4-3-2-1 Grounding",
+        "description": "A popular technique to help you stay present and reduce anxiety by engaging your five senses.",
+        "steps": [
+            "Identify 5 things you can see",
+            "Identify 4 things you can touch",
+            "Identify 3 things you can hear",
+            "Identify 2 things you can smell",
+            "Identify 1 thing you can taste"
+        ]
+    },
+    {
+        "topic": "Coping Techniques - Box Breathing",
+        "description": "A powerful relaxation technique that can help return your breathing to its normal rhythm.",
+        "steps": [
+            "Inhale for 4 seconds",
+            "Hold for 4 seconds",
+            "Exhale for 4 seconds",
+            "Wait for 4 seconds"
+        ]
+    },
+    {
+        "topic": "Coping Techniques - Progressive Muscle Relaxation",
+        "description": "A technique that involves tensing and then relaxing different muscle groups in the body to reduce physical tension.",
+        "strategies": ["Starting from the toes and working up to the face", "Holding muscle tension for 5 seconds", "Exhaling while releasing tension"]
+    },
+    {
+      "id": "001",
+      "topic": "anxiety",
+      "keywords": ["stress", "panic", "fear"],
+      "content": "Try 4-7-8 breathing technique to calm your mind.",
+      "severity": "medium"
+    }
+]

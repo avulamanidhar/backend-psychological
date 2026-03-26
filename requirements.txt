@@ -6,3 +6,9 @@ cryptography
 djangorestframework-simplejwt
 python-dotenv
 drf-spectacular
+openai
+faiss-cpu
+numpy
+tiktoken
+bcrypt
+django[bcrypt]

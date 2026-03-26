@@ -26,6 +26,8 @@ from .views import (
     HealthScoreDetail,
     FeedbackCreate,
     ForgotPasswordView,
+    VerifyOTPView,
+    ResetPasswordView,
     AIAnalysisList,
     AITransparencyList,
     FAQList,
@@ -48,6 +50,8 @@ urlpatterns = [
     path('login/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('login/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
+    path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
+    path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     
     # Profile
     path('profile/<str:username>/', UserProfileDetail.as_view(), name='user-profile'),

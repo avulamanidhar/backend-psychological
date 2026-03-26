@@ -1,15 +1,32 @@
+import os
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.shortcuts import get_object_or_404
-from .models import MoodEntry, UserProfile, ChatMessage, ActivityLog, Feedback, AIAnalysis, AITransparency, DetectedPattern, FAQ, HowItWorksStep, AppConfig, Notification, Recommendation, PrivacyPolicy
+from .models import (
+    MoodEntry, UserProfile, ChatMessage, ActivityLog, Feedback, AIAnalysis, 
+    AITransparency, DetectedPattern, FAQ, HowItWorksStep, AppConfig, 
+    Notification, Recommendation, PrivacyPolicy, PasswordResetOTP,
+    PasswordResetLog
+)
+from django.core.mail import send_mail
+from django.conf import settings
 from .serializers import (
     MoodEntrySerializer, UserSerializer, UserProfileSerializer, 
     ChatMessageSerializer, ActivityLogSerializer, FeedbackSerializer,
     AIAnalysisSerializer, AITransparencySerializer, DetectedPatternSerializer, FAQSerializer, HowItWorksStepSerializer,
     MyTokenObtainPairSerializer, AppConfigSerializer, NotificationSerializer, RecommendationSerializer, PrivacyPolicySerializer
 )
+from .rag_utils import RAGManager
+from .risk_utils import RiskAnalyzer
+from .email_service import EmailService
+from .otp_service import OTPService
+from django.contrib.auth.models import User
+from django.db.models import Avg
+from django.utils import timezone
+from datetime import datetime, timedelta
+import random
 
 class AppConfigList(APIView):
     def get(self, request):
@@ -247,11 +264,6 @@ class HowItWorksStepList(APIView):
         
         serializer = HowItWorksStepSerializer(steps, many=True)
         return Response(serializer.data)
-from django.contrib.auth.models import User
-from django.db.models import Avg
-from django.utils import timezone
-from datetime import datetime, timedelta
-import random
 
 class FeedbackCreate(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -523,29 +535,58 @@ class ChatMessageList(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        user_text = request.data.get('text', '')
+        user_text = request.data.get('text', '').strip()
         mode = request.data.get('mode', 'General')
         lang = request.data.get('language', 'English')
         
-        # Save user message
+        # 1. INPUT VALIDATION
+        if not user_text:
+            return Response({"error": "Message text is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if len(user_text) > 1000:
+            return Response({"error": "Message text is too long (max 1000 characters)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_modes = [m[0] for m in ChatMessage.MODE_CHOICES]
+        if mode not in valid_modes:
+            mode = 'General' # Fallback to default
+            
+        valid_langs = ['English', 'Telugu', 'Hindi'] # Common set for this app
+        if lang not in valid_langs:
+            lang = 'English'
+
+        # 2. RISK ANALYSIS MIDDLEWARE
+        try:
+            analyzer = RiskAnalyzer()
+            risk_level = analyzer.analyze(user_text)
+        except Exception as e:
+            # Fatal error in risk analysis should default to MEDIUM for safety
+            print(f"Risk analysis system error: {e}")
+            risk_level = "MEDIUM"
+        
+        # 2. SAVE USER MESSAGE WITH RISK LEVEL
         user_msg = ChatMessage.objects.create(
             user=request.user,
             text=user_text,
             is_user=True,
             mode=mode,
-            language=lang
+            language=lang,
+            risk_level=risk_level
         )
         
-        # Generate Therapeutic Response
-        ai_text = self.generate_response(user_text, mode, lang)
+        # 3. GENERATE RESPONSE BASED ON RISK
+        if risk_level == "HIGH":
+            ai_text = analyzer.get_emergency_response(lang)
+        else:
+            ai_text = self.generate_response(user_text, mode, lang, request.user, risk_level)
         
-        # Save AI message
+        # 4. SAVE AI MESSAGE
         ai_msg = ChatMessage.objects.create(
             user=request.user,
             text=ai_text,
             is_user=False,
             mode=mode,
-            language=lang
+            language=lang,
+            risk_level=risk_level
         )
         
         return Response({
@@ -553,57 +594,29 @@ class ChatMessageList(APIView):
             "ai_message": ChatMessageSerializer(ai_msg).data
         }, status=status.HTTP_201_CREATED)
 
-    def generate_response(self, text, mode, lang):
-        text = text.lower()
+    def generate_response(self, text, mode, lang, user, risk_level="LOW"):
+        text_lower = text.lower()
         
-        # Risk Detection
+        # (Already handled high-risk in post, but keeping a simple safety check here for medium/low cases)
         risk_keywords = ["die", "hopeless", "worthless", "chavali", "end my life", "disappear", "suicide"]
-        if any(kw in text for kw in risk_keywords):
+        if any(kw in text_lower for kw in risk_keywords):
             if lang == "Telugu":
                 return "మవా, నువ్వు అలా మాట్లాడుతుంటే నాకు చాలా బాధగా ఉంది. నీ ప్రాణం చాలా విలువైనది. దయచేసి నీకు దగ్గరగా ఉన్న వారితో లేదా ఒక డాక్టర్‌తో మాట్లాడు. నేను నీకు తోడుగా ఉంటాను, కానీ ప్రొఫెషనల్ హెల్ప్ తీసుకోవడం చాలా ముఖ్యం. 💙"
             return "I hear how much pain you're in, and it's okay to feel overwhelmed, but please know you're not alone. Your life is valuable. I strongly encourage you to reach out to a trusted person or a professional counselor right now. I'm here to support you through this. 💙"
 
-        # Mode Specific Logic
-        if mode == "Listener":
+        # Fetch conversation history (last 10 messages) for memory
+        history = ChatMessage.objects.filter(user=user).order_by('-timestamp')[:10]
+
+        # Initialize and use RAGManager for intelligent response
+        try:
+            rag_mgr = RAGManager()
+            return rag_mgr.generate_ai_response(text, mode, lang, history=history)
+        except Exception as e:
+            # Fallback to simple matching if OpenAI fails (API key not set, network, etc.)
+            print(f"Error in RAG generation: {e}")
             if lang == "Telugu":
-                return "అవునా మవా.. వింటున్నాను. ఇంకా చెప్పు, నీ మనసులో ఏముందో అంతా ఖాళీ చెయ్యి."
-            return "I hear you. That sounds like a lot to carry. I'm just here to listen. Go on."
-
-        if mode == "Calm":
-            if lang == "Telugu":
-                return "ప్రశాంతంగా ఉండు మవా. ఒక్క నిమిషం కళ్లు మూసుకుని గాలి పీల్చుకో. నేను నీ పక్కనే ఉన్నాను. 🌊"
-            return "Just breathe slowly with me. Focus on the comfort of this moment. You are safe. 🌊"
-
-        if mode == "CBT":
-            return f"Let's look at this. \nSituation: {text}\nThought: What's the main thought here?\nEmotion: How does it make you feel?\nCan we find evidence for or against this thought? 🧠"
-
-        # Anxiety/Stress Support
-        anxiety_keywords = ["panic", "anxious", "stress", "tension", "భయం", "టెన్షన్"]
-        if any(kw in text for kw in anxiety_keywords):
-            if lang == "Telugu":
-                return "మవా, కంగారు పడకు. మనం 5-4-3-2-1 గ్రౌండింగ్ చేద్దామా? నీ చుట్టూ ఉన్న 5 వస్తువులని చూడు. మెల్లగా గాలి పీల్చుకో. 🌿"
-            return "I can feel your anxiety. Let's try a quick grounding exercise. Name 5 things you can see around you right now. Keep your breaths slow and steady. 🌿"
-
-        # Language Specific Greetings/Small Talk
-        if lang == "Telugu":
-            if any(kw in text for kw in ["హాయ్", "hi", "hello"]):
-                return "హాయ్ మవా! ఎలా ఉన్నావ్? ఈరోజు విశేషాలు ఏంటి? 😊"
-            if any(kw in text for kw in ["బాధ", "కష్టం", "sad"]):
-                return "ఫీల్ అవ్వకు మవా. ఒక్కోసారి ఇలాగే ఉంటుంది. నేను ఉన్నాను కదా! అసలు ఏమైంది? 💙"
-            return "అర్థం చేసుకున్నాను మవా. ఇంకా చెప్పు.. నీకు ఏమనిపిస్తుంది? ✨"
-
-        if lang == "Hindi":
-            if any(kw in text for kw in ["नमस्ते", "hi", "hello"]):
-                return "नमस्ते दोस्त! कैसे हो? आज का दिन कैसा रहा? 😊"
-            return "मैं समझ रहा हूँ। और बताइये, आपको कैसा महसूस हो रहा है? ✨"
-
-        # Default English Support
-        if any(kw in text for kw in ["sad", "bad", "depressed"]):
-            return "I'm so sorry you're feeling down. It's totally okay to feel this way. Want to tell your 'big sibling' AI what happened? 💙"
-        elif any(kw in text for kw in ["happy", "good", "great"]):
-            return "That's amazing! I'm so happy for you! What's making today so special? 😊"
-
-        return "I hear you. Processing these thoughts is a brave step. I'm right here with you. What's on your mind? ✨"
+                return "అర్థం చేసుకున్నాను మవా. ఇంకా చెప్పు.. నీకు ఏమనిపిస్తుంది? ✨"
+            return "I hear you. Processing these thoughts is a brave step. I'm right here with you. What's on your mind? ✨"
 
 class ActivityLogList(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -692,13 +705,47 @@ class KeyIndicatorsView(APIView):
         })
 
 class ForgotPasswordView(APIView):
+    permission_classes = [permissions.AllowAny]
     def post(self, request):
-        from django.db.models import Q
-        identifier = request.data.get('username')
-        user_exists = User.objects.filter(Q(username=identifier) | Q(email=identifier)).exists()
-        if user_exists:
-            return Response({"message": "Password reset link sent to your registered email."}, status=status.HTTP_200_OK)
-        return Response({"error": "User not found with that username or email."}, status=status.HTTP_404_NOT_FOUND)
+        identifier = request.data.get('email') or request.data.get('username')
+        success, message = OTPService.generate_and_send_otp(identifier, request.META)
+        
+        if not success:
+            return Response({"message": message}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        
+        return Response({"message": message}, status=status.HTTP_200_OK)
+
+class VerifyOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+    def post(self, request):
+        identifier = request.data.get('email') or request.data.get('username')
+        otp_code = request.data.get('otp')
+        
+        if not identifier or not otp_code:
+            return Response({"error": "Identifier and OTP are required."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        success, message = OTPService.verify_otp(identifier, otp_code, request.META)
+        
+        if not success:
+            return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
+            
+        return Response({"message": message}, status=status.HTTP_200_OK)
+
+class ResetPasswordView(APIView):
+    permission_classes = [permissions.AllowAny]
+    def post(self, request):
+        identifier = request.data.get('email') or request.data.get('username')
+        otp_code = request.data.get('otp')
+        new_password = request.data.get('new_password')
+        
+        if not identifier or not otp_code or not new_password:
+            return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+        success, message = OTPService.reset_password(identifier, otp_code, new_password)
+        
+        if not success:
+            return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
+            
+        return Response({"message": message}, status=status.HTTP_200_OK)
 
 class NotificationList(APIView):
     permission_classes = [permissions.IsAuthenticated]
