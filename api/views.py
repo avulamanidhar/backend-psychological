@@ -28,6 +28,13 @@ from django.utils import timezone
 from datetime import datetime, timedelta
 import random
 
+def get_user_by_username_or_email(username_or_email):
+    from django.shortcuts import get_object_or_404
+    try:
+        return User.objects.get(username=username_or_email)
+    except User.DoesNotExist:
+        return get_object_or_404(User, email=username_or_email)
+
 class AppConfigList(APIView):
     def get(self, request):
         configs = AppConfig.objects.all()
@@ -277,7 +284,7 @@ class FeedbackCreate(APIView):
 class InsightDataView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         today = timezone.now().date()
         
         def get_day_metrics(date):
@@ -313,7 +320,7 @@ class InsightDataView(APIView):
 class MoodTrendView(APIView):
     permission_classes = [permissions.AllowAny]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         today = timezone.now().date()
         
         def get_intensity(date):
@@ -376,7 +383,7 @@ class MoodTrendView(APIView):
 class DetectedPatternsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         patterns = DetectedPattern.objects.filter(user=user)
         
         if not patterns.exists():
@@ -407,7 +414,7 @@ class DetectedPatternsView(APIView):
 class HealthScoreDetail(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         profile = get_object_or_404(UserProfile, user=user)
         
         # Calculate scores from last 7 days
@@ -449,16 +456,41 @@ class HealthScoreDetail(APIView):
         profile.mental_health_score = main_score
         profile.save()
 
+        # Generate dynamic recommendation
+        if stress_score < 50:
+            rec = "Your stress levels seem high. Try our 5-minute Grounding Exercise."
+        elif sleep_score < 50:
+            rec = "Your sleep score is low. Consider a calming meditation before bed tonight."
+        elif social_score < 50:
+            rec = "You haven't had many positive social interactions lately. Consider reaching out to a friend."
+        elif avg_mood < 60:
+            rec = "Your mood has been slightly low. Adding a daily reflection might help shift your perspective."
+        else:
+            rec = "Your overall wellness is in a great range! Keep up your current routines."
+
         return Response({
             "main_score": main_score,
             "mood_score": int(avg_mood),
             "stress_score": stress_score,
             "sleep_score": sleep_score,
-            "social_score": social_score
+            "social_score": social_score,
+            "recommendation": rec
         })
 
 class UserList(APIView):
     def post(self, request):
+        username = request.data.get('username', '')
+        email = request.data.get('email', '')
+        
+        if username.isdigit():
+            return Response({"error": "Username cannot be only numbers"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if email and len(email) < 8:
+            return Response({"error": "Email must be at least 8 characters long"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if email and User.objects.filter(email=email).exists():
+            return Response({"error": "an acc exist please login"}, status=status.HTTP_400_BAD_REQUEST)
+            
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -468,13 +500,23 @@ class UserList(APIView):
 class UserProfileDetail(APIView):
     permission_classes = [permissions.AllowAny]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            from django.shortcuts import get_object_or_404
+            user = get_object_or_404(User, email=username)
+            
         profile = get_object_or_404(UserProfile, user=user)
         serializer = UserProfileSerializer(profile)
         return Response(serializer.data)
 
     def put(self, request, username):
-        user = get_object_or_404(User, username=username)
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            from django.shortcuts import get_object_or_404
+            user = get_object_or_404(User, email=username)
+            
         profile = get_object_or_404(UserProfile, user=user)
         serializer = UserProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
@@ -573,13 +615,21 @@ class ChatMessageList(APIView):
             risk_level=risk_level
         )
         
-        # 3. GENERATE RESPONSE BASED ON RISK
+        # 3. ANALYZE EMOTION
+        try:
+            rag_mgr = RAGManager()
+            emotion = rag_mgr.analyze_emotion(user_text)
+        except Exception as e:
+            print(f"Emotion detection error: {e}")
+            emotion = "neutral"
+
+        # 4. GENERATE RESPONSE BASED ON RISK
         if risk_level == "HIGH":
             ai_text = analyzer.get_emergency_response(lang)
         else:
             ai_text = self.generate_response(user_text, mode, lang, request.user, risk_level)
         
-        # 4. SAVE AI MESSAGE
+        # 5. SAVE AI MESSAGE
         ai_msg = ChatMessage.objects.create(
             user=request.user,
             text=ai_text,
@@ -591,7 +641,10 @@ class ChatMessageList(APIView):
         
         return Response({
             "user_message": ChatMessageSerializer(user_msg).data,
-            "ai_message": ChatMessageSerializer(ai_msg).data
+            "ai_message": ChatMessageSerializer(ai_msg).data,
+            "reply": ai_text, # Added for simple client mapping
+            "emotion": emotion, # Added for suggestion engine
+            "userId": request.user.username
         }, status=status.HTTP_201_CREATED)
 
     def generate_response(self, text, mode, lang, user, risk_level="LOW"):
@@ -612,7 +665,7 @@ class ChatMessageList(APIView):
             rag_mgr = RAGManager()
             return rag_mgr.generate_ai_response(text, mode, lang, history=history)
         except Exception as e:
-            # Fallback to simple matching if OpenAI fails (API key not set, network, etc.)
+            # Fallback to simple matching if AI service fails (connection error, local model not running, etc.)
             print(f"Error in RAG generation: {e}")
             if lang == "Telugu":
                 return "అర్థం చేసుకున్నాను మవా. ఇంకా చెప్పు.. నీకు ఏమనిపిస్తుంది? ✨"
@@ -635,7 +688,7 @@ class ActivityLogList(APIView):
 class DashboardSummary(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         profile = get_object_or_404(UserProfile, user=user)
         latest_mood = MoodEntry.objects.filter(user=user).order_by('-timestampMillis').first()
         
@@ -643,32 +696,58 @@ class DashboardSummary(APIView):
         hour = datetime.now().hour
         greeting_prefix = "Good morning" if 5 <= hour < 12 else "Good afternoon" if 12 <= hour < 18 else "Good evening"
         
-        # Dynamic Risk & Recommendation Logic
+        # Risk & Recommendation Logic
         recent_moods = MoodEntry.objects.filter(user=user).order_by('-timestampMillis')[:3]
         risk_level = "Low"
         recommended_activity = "Try a breathing exercise to stay grounded."
         
         if recent_moods.exists():
-            avg_intensity = sum(m.intensity for m in recent_moods) / recent_moods.count()
-            if avg_intensity > 8:
+            avg_recent = sum(m.intensity for m in recent_moods) / recent_moods.count()
+            if avg_recent > 80:
                 risk_level = "High"
                 recommended_activity = "You've been through a lot lately. Chat with our AI coach or reach out for support."
-            elif avg_intensity > 5:
+            elif avg_recent > 50:
                 risk_level = "Moderate"
                 recommended_activity = "Feeling a bit overwhelmed? Let's try some grounding techniques."
+
+        # --- DYNAMIC WELLNESS SCORE CALCULATION (0-100) ---
+        moods = MoodEntry.objects.filter(user=user).order_by('-timestampMillis')[:7]
+        activities = ActivityLog.objects.filter(user=user).order_by('-timestamp')[:7]
+        chats = ChatMessage.objects.filter(user=user, is_user=True).count()
+
+        # 1. MOOD COMPONENT (MAX 40)
+        mood_score = 20
+        if moods.exists():
+            avg_intensity = sum(m.intensity for m in moods) / moods.count()
+            if 30 <= avg_intensity <= 60: mood_score = 40
+            elif avg_intensity < 30 or avg_intensity > 60: mood_score = 25
+        
+        # 2. ACTIVITY COMPONENT (MAX 30)
+        activity_score = min(activities.count() * 5, 30)
+
+        # 3. INTERACTION COMPONENT (MAX 30)
+        chat_score = min(chats * 2, 30)
+
+        total_score = int(mood_score + activity_score + chat_score)
+        
+        if profile.mental_health_score != total_score:
+            profile.mental_health_score = total_score
+            profile.save()
 
         data = {
             "greeting": f"{greeting_prefix}, {user.username}!",
             "latest_mood": MoodEntrySerializer(latest_mood).data if latest_mood else None,
-            "mental_health_score": profile.mental_health_score,
+            "mental_health_score": total_score,
             "risk_level": risk_level,
-            "recommended_activity": recommended_activity
+            "recommended_activity": recommended_activity,
+            "activity_count": activities.count(),
+            "chat_count": chats
         }
         return Response(data)
 
 class KeyIndicatorsView(APIView):
     def get(self, request, username):
-        user = get_object_or_404(User, username=username)
+        user = get_user_by_username_or_email(username)
         moods = MoodEntry.objects.filter(user=user).order_by('-timestampMillis')[:10]
         
         # Default mock values
@@ -896,18 +975,13 @@ class DataDeleteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def delete(self, request):
         user = request.user
-        # Delete user data but keep the account? 
-        # Usually "Delete Data" in privacy terms means deleting everything associated with the user.
-        MoodEntry.objects.filter(user=user).delete()
-        ChatMessage.objects.filter(user=user).delete()
-        ActivityLog.objects.filter(user=user).delete()
-        Feedback.objects.filter(user=user).delete()
-        # Optionally reset profile
-        profile = UserProfile.objects.get(user=user)
-        profile.mental_health_score = 0
-        profile.save()
+        # Delete the user account (cascades to all associated data: profile, moods, chats, etc.)
+        user_id = user.id
+        user.delete()
         
-        return Response({"message": "All your personal data has been deleted from our servers."}, status=status.HTTP_204_NO_CONTENT)
+        return Response({
+            "message": f"User {user_id} and all associated data have been deleted from our servers."
+        }, status=status.HTTP_204_NO_CONTENT)
 
 class ReflectionGenerationView(APIView):
     def post(self, request):
@@ -920,3 +994,65 @@ class ReflectionGenerationView(APIView):
         reflection = mock_mood.generate_reflection()
         
         return Response({"aiReflection": reflection})
+
+class RecommendationsByEmotion(APIView):
+    permission_classes = [permissions.AllowAny]
+    def get(self, request):
+        emotion = request.query_params.get('emotion', 'neutral').lower()
+        
+        all_recs = {
+            "sad": {
+                "exercises": [
+                    { "title": "Self-Compassion Meditation", "description": "Gently focus on self-kindness.", "type": "meditation" },
+                    { "title": "5-4-3-2-1 Grounding", "description": "Engage your senses.", "type": "grounding" }
+                ],
+                "music": [
+                    { "title": "Weightless by Marconi Union", "type": "calm", "link": "https://open.spotify.com/track/696DnlbrpFC7i98vgypS9q" }
+                ],
+                "videos": [
+                    { "title": "Finding Hope", "type": "motivation", "link": "https://www.youtube.com/watch?v=A8Fov9B8o-o" }
+                ]
+            },
+            "stress": {
+                "exercises": [
+                    { "title": "Box Breathing", "description": "Inhale 4, Hold 4, Exhale 4, Hold 4.", "type": "breathing" }
+                ],
+                "music": [
+                    { "title": "Soft Piano", "type": "focus", "link": "https://www.youtube.com/watch?v=9QnIdQf_yIk" }
+                ],
+                "videos": [
+                    { "title": "Stress Management", "type": "motivation", "link": "https://www.youtube.com/watch?v=grnEubLe_Y0" }
+                ]
+            },
+            "anxiety": {
+                "exercises": [
+                    {"title": "4-7-8 Breathing", "description": "Inhale 4, Hold 7, Exhale 8.", "type": "breathing"}
+                ],
+                "music": [{"title": "Calm Classical", "type": "calm", "link": "https://www.youtube.com/watch?v=Y-TQ0h8iP_I"}],
+                "videos": [{"title": "Anxiety Relief", "type": "motivation", "link": "https://www.youtube.com/watch?v=ZIDCO_T08cM"}]
+            },
+            "happy": {
+                "exercises": [{"title": "Gratitude Journaling", "description": "Write 3 things you are thankful for.", "type": "grounding"}],
+                "music": [{"title": "Upbeat Hits", "type": "uplifting", "link": "https://www.youtube.com/watch?v=09R8_2nJtjg"}],
+                "videos": [{"title": "Science of Happiness", "type": "motivation", "link": "https://www.youtube.com/watch?v=L2G5Yq48Q8Y"}]
+            },
+            "lonely": {
+                "exercises": [{"title": "Loving-Kindness Meditation", "description": "Extend wishes to yourself and others.", "type": "meditation"}],
+                "music": [{"title": "Acoustic Folk", "type": "calm", "link": "https://www.youtube.com/watch?v=fWSu6-i_zEw"}],
+                "videos": [{"title": "Overcoming Loneliness", "type": "motivation", "link": "https://www.youtube.com/watch?v=n3Xv_g3g-mA"}]
+            },
+            "neutral": {
+                "exercises": [{"title": "Body Scan", "description": "Focus on each part of your body.", "type": "meditation"}],
+                "music": [{"title": "Nature Sounds", "type": "calm", "link": "https://www.youtube.com/watch?v=q6f-ZUXAnkI"}],
+                "videos": [{"title": "Mindfulness", "type": "motivation", "link": "https://www.youtube.com/watch?v=I67-iKq6S6A"}]
+            }
+        }
+        
+        rec = all_recs.get(emotion, all_recs['neutral'])
+        return Response({"emotion": emotion, "recommendations": rec})
+
+class MoodUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def post(self, request):
+        mood = request.data.get('mood')
+        return Response({"message": f"Successfully logged {mood} mood."})

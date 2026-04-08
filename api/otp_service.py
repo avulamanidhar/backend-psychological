@@ -41,10 +41,13 @@ class OTPService:
 
         try:
             from django.db.models import Q
-            user = User.objects.get(Q(username=identifier) | Q(email=identifier))
-        except User.DoesNotExist:
-            # Generic response to prevent enumeration
-            return True, "If an account exists with that email, an OTP has been sent."
+            user = User.objects.filter(Q(username=identifier) | Q(email=identifier)).first()
+            if not user:
+                # Generic response to prevent enumeration
+                return True, "If an account exists with that email, an OTP has been sent."
+        except Exception as e:
+            logger.error(f"Error finding user: {str(e)}")
+            return False, "An error occurred while processing your request."
 
         # 3. OTP Generation
         otp_code = str(random.randint(100000, 999999))
@@ -62,7 +65,13 @@ class OTPService:
             expiry_time=expiry_time
         )
 
-        # 6. Send Email
+        # 6. check for default placeholders in settings
+        from django.conf import settings
+        smtp_user = getattr(settings, 'EMAIL_HOST_USER', '')
+        if 'your-email' in smtp_user or not smtp_user:
+             return False, "Server SMTP is not configured. Please update the .env file with real email credentials."
+
+        # 7. Send Email
         success, error_msg = EmailService.send_otp_email(user.email, user.username, otp_code, expiry_minutes)
         if not success:
             logger.error(f"OTP Email delivery failed for {user.email}: {error_msg}")
@@ -71,26 +80,40 @@ class OTPService:
                 action='EMAIL_SEND_FAIL',
                 ip_address=request_meta.get('REMOTE_ADDR')
             )
+            return False, f"Email delivery failed: {error_msg}. Check your email settings."
         
-        return True, "If an account exists with that email, an OTP has been sent."
+        return True, "An OTP has been sent successfully to your registered email."
 
     @staticmethod
     def verify_otp(identifier, otp_code, request_meta):
         """
         Verifies the provided OTP code.
         """
+        logger.info(f"OTP Verification attempt for: {identifier}")
         try:
             from django.db.models import Q
-            user = User.objects.get(Q(username=identifier) | Q(email=identifier))
-            # Get active OTP
-            otp_obj = PasswordResetOTP.objects.get(user=user, otp=otp_code)
-        except (User.DoesNotExist, PasswordResetOTP.DoesNotExist):
-            PasswordResetLog.objects.create(
-                email=identifier,
-                action='VERIFY_FAIL',
-                ip_address=request_meta.get('REMOTE_ADDR')
-            )
-            return False, "Invalid OTP or identifier."
+            # Use filter().first() instead of get() to handle edge cases gracefully
+            user = User.objects.filter(Q(username=identifier) | Q(email=identifier)).first()
+            
+            if not user:
+                logger.warning(f"Verification failed: No user found for {identifier}")
+                return False, "User not found. Please verify your email."
+
+            # Get active OTP for this specific user
+            otp_obj = PasswordResetOTP.objects.filter(user=user, otp=otp_code).order_by('-created_at').first()
+            
+            if not otp_obj:
+                logger.warning(f"Verification failed: Invalid OTP {otp_code} for user {user.username}")
+                PasswordResetLog.objects.create(
+                    email=identifier,
+                    action='VERIFY_FAIL_INVALID_CODE',
+                    ip_address=request_meta.get('REMOTE_ADDR')
+                )
+                return False, "Invalid verification code. Please check your email."
+
+        except Exception as e:
+            logger.error(f"OTP Verification error: {str(e)}")
+            return False, "An internal error occurred. Please try again later."
 
         # 1. Check Expiry
         if otp_obj.expiry_time < timezone.now():
@@ -118,10 +141,12 @@ class OTPService:
         """
         try:
             from django.db.models import Q
-            user = User.objects.get(Q(username=identifier) | Q(email=identifier))
-            otp_obj = PasswordResetOTP.objects.get(user=user, otp=otp_code, verified=True)
-        except (User.DoesNotExist, PasswordResetOTP.DoesNotExist):
-            return False, "Invalid request or unverified OTP."
+            user = User.objects.filter(Q(username=identifier) | Q(email=identifier)).first()
+            otp_obj = PasswordResetOTP.objects.filter(user=user, otp=otp_code, verified=True).first()
+            if not user or not otp_obj:
+                return False, "Invalid request or unverified OTP."
+        except Exception as e:
+            return False, f"Server error: {str(e)}"
 
         if otp_obj.expiry_time < timezone.now():
             otp_obj.delete()
